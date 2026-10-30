@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.turbo/
+.vercel/
+.env
+.env.local
+.env.*.local
+coverage/
+*.log
+*.tsbuildinfo
+apps/web/.next/
+apps/web/.env.local
+outputs/
+work/
