@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export default async function JobPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePageAuth();
   const { id } = await params;
-  const result = await getJob(id);
+  const result = await getJob(id, 200);
   if (!result) notFound();
   const { job, items } = result;
 
@@ -34,6 +34,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
             <table className="table"><thead><tr><th>#</th><th>CPF</th><th>Nome</th><th>Nascimento</th><th>Telefones</th><th>E-mails</th><th>Origem</th><th>Status</th></tr></thead><tbody>
               {items.map((item) => <tr key={item.id}><td>{item.row_index + 1}</td><td>{maskCpf(item.cpf)}</td><td><span className="person-name">{item.result?.nome || "—"}</span>{item.error_message ? <div className="person-sub">{item.error_message}</div> : null}</td><td>{item.result?.dataNascimento || "—"}</td><td>{item.result?.telefones?.length ?? 0}</td><td>{item.result?.emails?.length ?? 0}</td><td>{item.status === "cached" ? "Banco" : item.status === "success" ? "API" : "—"}</td><td><StatusBadge status={item.status} /></td></tr>)}
             </tbody></table>
+            {job.total_items > items.length ? <div className="empty">Exibindo os primeiros {items.length} itens para manter o painel leve. A exportação inclui os {job.total_items.toLocaleString("pt-BR")} registros.</div> : null}
           </div>
         </section>
       </div>

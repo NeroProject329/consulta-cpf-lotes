@@ -42,7 +42,17 @@ export function UploadConsultation() {
 
     try {
       const response = await fetch("/api/jobs", { method: "POST", body });
-      const data = (await response.json()) as { job?: { id: string }; error?: string };
+      const responseText = await response.text();
+      let data: { job?: { id: string }; error?: string };
+      try {
+        data = JSON.parse(responseText) as { job?: { id: string }; error?: string };
+      } catch {
+        throw new Error(
+          response.status === 413
+            ? "O arquivo ultrapassou o limite da hospedagem atual. Use um arquivo menor ou publique o sistema no Railway."
+            : `O servidor respondeu em formato inválido (${response.status}).`,
+        );
+      }
       if (!response.ok || !data.job) throw new Error(data.error || "Falha ao enviar o arquivo.");
       router.push(`/consultas/${data.job.id}`);
     } catch (caught) {

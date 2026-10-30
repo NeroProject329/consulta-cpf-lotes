@@ -4,6 +4,8 @@ import type { JobItem, JobSummary, QueryMode } from "@/lib/types";
 import type postgres from "postgres";
 
 const price = Number(process.env.PAID_QUERY_PRICE ?? 0.1);
+const requestDelayMs = Math.max(250, Number(process.env.CPF_REQUEST_DELAY_MS ?? 800));
+const providerLockId = 982_771_405;
 
 export async function createJob(input: {
   filename: string;
@@ -26,14 +28,28 @@ export async function createJob(input: {
   });
 }
 
-export async function getJob(id: string) {
+export async function getJobSummary(id: string) {
   await ensureSchema();
-  const [job] = await sql<JobSummary[]>`select * from consultation_jobs where id = ${id}`;
-  if (!job) return null;
-  const items = await sql<JobItem[]>`
-    select id, row_index, cpf, status, result, error_message, cost::text, source_mode
-    from consultation_job_items where job_id = ${id} order by row_index asc
+  const [job] = await sql<JobSummary[]>`
+    select *, estimated_cost::text, amount_spent::text, balance_after::text
+    from consultation_jobs where id = ${id}
   `;
+  return job ?? null;
+}
+
+export async function getJob(id: string, itemLimit?: number, itemOffset = 0) {
+  const job = await getJobSummary(id);
+  if (!job) return null;
+  const items = itemLimit == null
+    ? await sql<JobItem[]>`
+        select id, row_index, cpf, status, result, error_message, cost::text, source_mode
+        from consultation_job_items where job_id = ${id} order by row_index asc
+      `
+    : await sql<JobItem[]>`
+        select id, row_index, cpf, status, result, error_message, cost::text, source_mode
+        from consultation_job_items where job_id = ${id} order by row_index asc
+        limit ${itemLimit} offset ${itemOffset}
+      `;
   return { job, items };
 }
 
@@ -123,9 +139,11 @@ async function markItemError(itemId: number, message: string) {
 
 export async function processJobChunk(id: string, chunkSize = 5) {
   await ensureSchema();
-  const [job] = await sql<JobSummary[]>`select * from consultation_jobs where id = ${id}`;
+  const job = await getJobSummary(id);
   if (!job) return null;
-  if (["completed", "completed_with_errors", "failed"].includes(job.status)) return getJob(id);
+  if (["completed", "completed_with_errors", "failed"].includes(job.status)) {
+    return { job, hasMore: false };
+  }
 
   await sql`update consultation_jobs set status = 'processing', updated_at = now() where id = ${id}`;
   const pending = await sql<Array<{ id: number; cpf: string; row_index: number }>>`
@@ -159,6 +177,10 @@ export async function processJobChunk(id: string, chunkSize = 5) {
           }
         }
 
+        // One provider request at a time across every job and server instance.
+        // The database lock also protects against two browser tabs processing concurrently.
+        await tx`select pg_advisory_xact_lock(${providerLockId})`;
+        await tx`select pg_sleep(${requestDelayMs / 1000})`;
         const result = await consultCpf(item.cpf, job.mode);
         await tx`
           insert into consultation_cache (cpf, mode, response, result, transaction_id, cost, consulted_at, updated_at)
@@ -187,5 +209,5 @@ export async function processJobChunk(id: string, chunkSize = 5) {
 
   const updated = await recalculateJob(id);
   const remaining = updated.processed_items < updated.total_items;
-  return { ...(await getJob(id)), hasMore: remaining };
+  return { job: updated, hasMore: remaining };
 }

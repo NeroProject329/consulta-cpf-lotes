@@ -24,6 +24,15 @@ function getArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(asRecord) : [];
 }
 
+function wait(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function retryDelay(response: Response, attempt: number) {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1_500 * 2 ** attempt;
+}
+
 export function normalizeProviderResponse(response: ProviderResponse, cpf: string): NormalizedPerson {
   const modules = response.data?.modules ?? {};
   const full = asRecord(modules.dados_completo?.data);
@@ -73,18 +82,36 @@ export async function consultCpf(cpf: string, mode: QueryMode) {
   if (!url || !token) throw new Error("API de CPF não configurada.");
 
   const moduleKeys = mode === "paid" ? ["dados_completo", "dados_basico"] : ["dados_basico"];
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const maxAttempts = 3;
 
-  try {
-    const request = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Api-Key": token },
-      body: JSON.stringify({ doc_type: "cpf", module_keys: moduleKeys, inputs: { CPF: cpf } }),
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    const response = (await request.json()) as ProviderResponse;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    let request: Response;
+    try {
+      request = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Api-Key": token },
+        body: JSON.stringify({ doc_type: "cpf", module_keys: moduleKeys, inputs: { CPF: cpf } }),
+        signal: controller.signal,
+        cache: "no-store",
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if ([429, 502, 503, 504].includes(request.status) && attempt < maxAttempts - 1) {
+      await wait(retryDelay(request, attempt));
+      continue;
+    }
+
+    const body = await request.text();
+    let response: ProviderResponse;
+    try {
+      response = JSON.parse(body) as ProviderResponse;
+    } catch {
+      throw new Error(`A API de CPF respondeu em formato inválido (${request.status}).`);
+    }
     if (!request.ok || !response.success || !response.data) {
       throw new Error(response.message || `Falha na consulta (${request.status}).`);
     }
@@ -104,7 +131,7 @@ export async function consultCpf(cpf: string, mode: QueryMode) {
       cost: response.data.total_paid ?? (mode === "paid" ? Number(process.env.PAID_QUERY_PRICE ?? 0.1) : 0),
       transactionId: response.data.transaction_id ?? null,
     };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  throw new Error("A API de CPF permaneceu indisponível após novas tentativas.");
 }
