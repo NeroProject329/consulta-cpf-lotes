@@ -40,7 +40,7 @@ async function createSchema() {
       CREATE TABLE IF NOT EXISTS consultation_jobs (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(), filename text NOT NULL,
         mode text NOT NULL CHECK (mode IN ('free','paid')), requested_limit integer,
-        status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','completed','completed_with_errors','failed')),
+        status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','cancelled','completed','completed_with_errors','failed')),
         total_items integer NOT NULL DEFAULT 0, processed_items integer NOT NULL DEFAULT 0,
         success_items integer NOT NULL DEFAULT 0, failed_items integer NOT NULL DEFAULT 0,
         cached_items integer NOT NULL DEFAULT 0, live_items integer NOT NULL DEFAULT 0,
@@ -61,6 +61,19 @@ async function createSchema() {
       CREATE TABLE IF NOT EXISTS app_settings (
         key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
       );
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'consultation_jobs'::regclass
+            AND conname = 'consultation_jobs_status_check'
+            AND pg_get_constraintdef(oid) NOT LIKE '%cancelled%'
+        ) THEN
+          ALTER TABLE consultation_jobs DROP CONSTRAINT consultation_jobs_status_check;
+          ALTER TABLE consultation_jobs ADD CONSTRAINT consultation_jobs_status_check
+            CHECK (status IN ('pending','processing','cancelled','completed','completed_with_errors','failed'));
+        END IF;
+      END $$;
     `);
   } finally {
     await sql`select pg_advisory_unlock(731_029_611)`;

@@ -15,6 +15,7 @@ export function statusLabel(status: string) {
   const labels: Record<string, string> = {
     pending: "Aguardando",
     processing: "Processando",
+    cancelled: "Cancelado",
     completed: "Concluído",
     completed_with_errors: "Concluído com alertas",
     failed: "Falhou",

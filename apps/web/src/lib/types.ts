@@ -3,6 +3,7 @@ export type QueryMode = "free" | "paid";
 export type JobStatus =
   | "pending"
   | "processing"
+  | "cancelled"
   | "completed"
   | "completed_with_errors"
   | "failed";

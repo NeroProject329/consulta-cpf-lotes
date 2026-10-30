@@ -61,6 +61,16 @@ export async function listJobs(limit = 20) {
   `;
 }
 
+export async function cancelJob(id: string) {
+  await ensureSchema();
+  const [cancelled] = await sql<JobSummary[]>`
+    update consultation_jobs set status = 'cancelled', updated_at = now()
+    where id = ${id} and status in ('pending', 'processing')
+    returning *, estimated_cost::text, amount_spent::text, balance_after::text
+  `;
+  return cancelled ?? getJobSummary(id);
+}
+
 export async function getDashboardData() {
   await ensureSchema();
   const [stats, jobs, balanceSetting] = await Promise.all([
@@ -121,7 +131,8 @@ async function recalculateJob(id: string) {
         ? "completed_with_errors"
         : "completed";
   const [job] = await sql<JobSummary[]>`
-    update consultation_jobs set status = ${status}, processed_items = ${aggregate.processed},
+    update consultation_jobs set status = case when status = 'cancelled' then 'cancelled' else ${status} end,
+      processed_items = ${aggregate.processed},
       success_items = ${aggregate.success}, failed_items = ${aggregate.failed},
       cached_items = ${aggregate.cached}, live_items = ${aggregate.live},
       amount_spent = ${aggregate.spent}, updated_at = now()
@@ -141,17 +152,27 @@ export async function processJobChunk(id: string, chunkSize = 5) {
   await ensureSchema();
   const job = await getJobSummary(id);
   if (!job) return null;
-  if (["completed", "completed_with_errors", "failed"].includes(job.status)) {
+  if (["cancelled", "completed", "completed_with_errors", "failed"].includes(job.status)) {
     return { job, hasMore: false };
   }
 
-  await sql`update consultation_jobs set status = 'processing', updated_at = now() where id = ${id}`;
+  const [started] = await sql<JobSummary[]>`
+    update consultation_jobs set status = 'processing', updated_at = now()
+    where id = ${id} and status in ('pending', 'processing')
+    returning *, estimated_cost::text, amount_spent::text, balance_after::text
+  `;
+  if (!started) {
+    const current = await getJobSummary(id);
+    return current ? { job: current, hasMore: false } : null;
+  }
   const pending = await sql<Array<{ id: number; cpf: string; row_index: number }>>`
     select id, cpf, row_index from consultation_job_items
     where job_id = ${id} and status = 'pending' order by row_index asc limit ${chunkSize}
   `;
 
   for (const item of pending) {
+    const current = await getJobSummary(id);
+    if (!current || current.status === "cancelled") break;
     try {
       await sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(hashtext(${item.cpf}))`;
@@ -208,6 +229,6 @@ export async function processJobChunk(id: string, chunkSize = 5) {
   }
 
   const updated = await recalculateJob(id);
-  const remaining = updated.processed_items < updated.total_items;
+  const remaining = updated.status !== "cancelled" && updated.processed_items < updated.total_items;
   return { job: updated, hasMore: remaining };
 }
